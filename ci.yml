@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Backend: lint + smoke test ───────────────────────────────
+  backend:
+    name: Backend — Node.js
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: chronochain-node
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: chronochain-node/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline || npm install
+
+      - name: Syntax check (node --check)
+        run: node --check index.js
+
+      - name: Smoke test — server starts and mines genesis block
+        run: |
+          node index.js &
+          PID=$!
+          sleep 2
+
+          echo "Testing POST /message..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST http://localhost:6001/message \
+            -H "Content-Type: application/json" \
+            -d '{"from":"ci-wallet-test","message":"Hello from CI"}')
+
+          kill $PID 2>/dev/null || true
+
+          if [ "$STATUS" = "201" ]; then
+            echo "✅ POST /message returned 201"
+          else
+            echo "❌ Expected 201, got $STATUS"
+            exit 1
+          fi
+
+      - name: Smoke test — GET /chain
+        run: |
+          node index.js &
+          PID=$!
+          sleep 2
+
+          RESPONSE=$(curl -s http://localhost:6001/chain)
+          kill $PID 2>/dev/null || true
+
+          echo "Chain response: $RESPONSE"
+          echo "$RESPONSE" | grep -q '"length"' && echo "✅ /chain OK" || (echo "❌ /chain failed" && exit 1)
+
+  # ── Frontend: build check ────────────────────────────────────
+  frontend:
+    name: Frontend — Vite Build
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: chronochain-ui
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: chronochain-ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline || npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify dist output exists
+        run: |
+          [ -d dist ] && echo "✅ dist/ exists" || (echo "❌ dist/ missing" && exit 1)
+          [ -f dist/index.html ] && echo "✅ dist/index.html exists" || (echo "❌ dist/index.html missing" && exit 1)
